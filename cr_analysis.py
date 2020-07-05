@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.8
 
 # # Analyzing Critical Role
+import argparse
 import sys
 import numpy as np
 import pandas as pd
@@ -16,25 +17,33 @@ from keras.models import Sequential, load_model
 from keras.layers import LSTM, Dense, Dropout, Embedding, Bidirectional
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from pprint import pprint as pp
+import gc
 
 
 curdir = pathlib.Path()
 output_file = curdir / "cr.json"
 processed_file = curdir / "processed.json"
+model_dir = curdir / 'models'
+script_file = curdir / 'output_script.txt'
 
 
-SEQUENCE_SIZE = 100
+SEQUENCE_SIZE = 5
 
 
 def main():
+    args = get_args()
+
     author_map = generate_author_map()
     json_formatted = parse_html(author_map)
+    json_formatted = [
+        obj for obj in json_formatted if obj["episode"] == 80 and obj["season"] == 2
+    ]
 
     df = pd.read_json("cr.json")
     df.head()
 
     if not processed_file.exists():
-        print('processing data')
+        print("processing data")
         main_cast_probs = (
             df.groupby("author").text.count().sort_values(ascending=False)[:8]
         )
@@ -47,17 +56,73 @@ def main():
 
         processed_file.write_text(
             json.dumps(
-                {"text": new_text, "word_index": word_index, "index_word": index_word,}
+                {"text": new_text, "word_index": word_index, "index_word": index_word}
             )
         )
     else:
-        print('Loading previously processed data')
+        print("Loading previously processed data")
         obj = json.loads(processed_file.read_text())
-        new_text, word_index, index_word = obj['text'], obj['word_index'], obj['index_word']
+        new_text, word_index, index_word = (
+            obj["text"],
+            obj["word_index"],
+            obj["index_word"],
+        )
+
+    index_word = {int(k): v for k, v in index_word.items()}
 
     pp(new_text[0])
 
-    print(len(new_text))
+    print(f"{len(word_index)=}")
+
+    print(f"{len(new_text)=}")
+
+    if args.train:
+        feature_train, feature_test, label_train, label_test = generate_features_and_labels(
+            new_text, word_index
+        )
+
+        build_model(
+            feature_train, feature_test, label_train, label_test, word_index,
+        )
+
+    model = model_dir / "model.h5"
+    if not model.exists():
+        raise FileNotFoundError
+    model = load_model(model)
+
+    seed = 'matt>'
+
+    null_input = np.ones(SEQUENCE_SIZE) * word_index["."]
+    seq = []
+    for word in tokenize_sentence(seed):
+        if word in word_index:
+            seq.append(word_index[word])
+
+    seq = seq[-SEQUENCE_SIZE:]
+    null_input[-len(seq):] = seq
+    start = np.array([null_input], dtype=np.float64)
+
+    response = []
+    for i in range(10_000):
+        preds = model.predict(start)[0].astype(np.float64)
+        preds = preds / sum(preds)  # normalize
+        probas = np.random.multinomial(1, preds, 1)[0]
+
+        next_idx = np.argmax(probas)
+        response.append(next_idx)
+
+        start = np.array([[*start[0], next_idx][-SEQUENCE_SIZE:]], dtype=np.float64)
+
+    script_file.write_text(cleanup(seed, " ".join(index_word[s] for s in response)))
+
+
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train', action='store_true', default=False, help='Retrain model? (False)')
+    args = parser.parse_args()
+    return args
 
 
 def generate_markov_probs(main_cast, json_formatted):
@@ -172,7 +237,7 @@ def parse_html(author_map):
                 "ep": o["ep"],
                 "season": int(o["ep"].split("-")[0][2:]),
                 "episode": int(o["ep"].split("-")[1]),
-                "raw": f"{o['author']}> {strip_chars(o['text'])}"
+                "raw": f"{o['author']}> {strip_chars(o['text'])}",
             }
             for o in parsed
         ]
@@ -220,27 +285,27 @@ def generate_features_and_labels(text, word_index):
     features = []
     labels = []
 
-    for message in text:
-        sequence = message["sequence"]
-        if len(sequence) < SEQUENCE_SIZE:
-            continue
+    full_sequence = [item for message in text for item in message["sequence"]]
+    print(f"{len(full_sequence)=}")
 
-        for i in range(SEQUENCE_SIZE, len(sequence)):
-            extract = sequence[i - SEQUENCE_SIZE : i + 1]
+    for i in range(SEQUENCE_SIZE, len(full_sequence)):
+        extract = full_sequence[i - SEQUENCE_SIZE : i + 1]
 
-            features.append(extract[:-1])  # train on first 4
-            labels.append(extract[-1])  # label is last
+        features.append(extract[:-1])  # train on first N
+        labels.append(extract[-1])  # label is last
 
-    features = np.array(features)
+    features = np.array(features, dtype=np.uint16)
 
-    # one-hot encode (switch to binary representation) for words
-    num_words = len(word_index) + 1
-    label_array = np.zeros((len(features), num_words), dtype=np.int8)
-    for i, label in enumerate(labels):
-        label_array[i, label] = 1
+    # # one-hot encode (switch to binary representation) for words
+    # num_words = len(word_index) + 1
+    # label_array = np.zeros((len(features), num_words), dtype=np.bool_)
+    # for i, label in enumerate(labels):
+    #     label_array[i, label] = True
 
-    print(f"Feature Dimensions: {features.shape}")
-    print(f"Label Dimensions: {label_array.shape}")
+    label_array = np.array(labels, dtype=np.uint16)
+
+    print(f"{features.shape=}")
+    print(f"{label_array.shape=}")
 
     (
         feature_train,
@@ -251,6 +316,11 @@ def generate_features_and_labels(text, word_index):
         features, label_array, test_size=0.1, shuffle=True
     )
 
+    # lets not leave these hanging huh?
+    gc.enable()
+    del features, label_array
+    gc.collect()
+
     return feature_train, feature_test, label_train, label_test
 
 
@@ -259,7 +329,7 @@ def build_model(
 ):
     num_words = len(word_index) + 1
 
-    dim = 25
+    dim = 100
 
     # set up model
     model = Sequential()  # Build model one layer at a time
@@ -267,7 +337,7 @@ def build_model(
     model.add(
         Embedding(  # maps each input word to 100-dim vector
             input_dim=num_words,  # how many words can input
-            input_length=TIMESTEP,  # timestep length
+            input_length=SEQUENCE_SIZE,  # timestep length
             output_dim=dim,  # output vector
             weights=weights,
             trainable=True,  # update embeddings
@@ -276,14 +346,14 @@ def build_model(
     model.add(
         Bidirectional(
             LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
-            input_shape=(TIMESTEP, dim),
+            input_shape=(SEQUENCE_SIZE, dim),
         )
     )
-    model.add(
-        Bidirectional(
-            LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1)
-        )
-    )
+    # model.add(
+    #     Bidirectional(
+    #         LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1)
+    #     )
+    # )
     model.add(
         Bidirectional(
             LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
@@ -293,7 +363,7 @@ def build_model(
     model.add(Dropout(0.25))  # input is rate that things are zeroed
     model.add(Dense(num_words, activation="softmax"))
     model.compile(
-        optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"]
+        optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
     )
     model.summary()
 
@@ -315,7 +385,7 @@ def build_model(
     )
 
 
-def cleanup(input_string: str) -> str:
+def cleanup(seed, input_string: str) -> str:
     output_string = re.subn(r" ([,\.\!\?])", r"\1", input_string)[0]
     output_string = re.subn(r" i([ ,\.\!\?'])", r" I\1", output_string)[0]
 
@@ -324,8 +394,8 @@ def cleanup(input_string: str) -> str:
     to_upper = lambda match: f"{match.group(1)}{match.group(2).upper()}"
     output_string = re.subn(r"([.\!\?] )(\w)", to_upper, output_string)[0]
 
-    if output_string[-1] not in ",.!?":
-        output_string += random.choice(",.!?")
+    output_string = f"{seed} {output_string}"
+    output_string = re.subn(r"([a-z]+>)", r"\n\1", output_string)[0]
 
     return output_string
 
