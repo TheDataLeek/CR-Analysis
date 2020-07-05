@@ -27,7 +27,9 @@ model_dir = curdir / 'models'
 script_file = curdir / 'output_script.txt'
 
 
-SEQUENCE_SIZE = 10
+SEQUENCE_SIZE = 20
+
+USE_EP = lambda i: i >= 70
 
 
 def main():
@@ -36,9 +38,9 @@ def main():
     author_map = generate_author_map()
     json_formatted = parse_html(author_map)
 
-    # json_formatted = [
-    #     obj for obj in json_formatted if obj["episode"] in [1, 2, 3] and obj["season"] == 2
-    # ]
+    json_formatted = [
+        obj for obj in json_formatted if USE_EP(obj["episode"]) and obj["season"] == 2
+    ]
 
     df = pd.read_json("cr.json")
     df.head()
