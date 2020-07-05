@@ -29,7 +29,7 @@ script_file = curdir / 'output_script.txt'
 
 SEQUENCE_SIZE = 20
 
-USE_EP = lambda i: i >= 70
+USE_EP = lambda i: 70 <= i <= 80
 
 
 def main():
@@ -41,6 +41,8 @@ def main():
     json_formatted = [
         obj for obj in json_formatted if USE_EP(obj["episode"]) and obj["season"] == 2
     ]
+
+    json_formatted = extract_rp(json_formatted)
 
     df = pd.read_json("cr.json")
     df.head()
@@ -119,6 +121,26 @@ def main():
         start = np.array([[*start[0], next_idx][-SEQUENCE_SIZE:]], dtype=np.float64)
 
     script_file.write_text(cleanup(seed, " ".join(index_word[s] for s in response)))
+
+
+def extract_rp(json_formatted):
+    cur_ep = None
+    seen_theme_yet = False
+    music_note = '♪'
+
+    filtered = []
+    for message in json_formatted:
+        if message['ep'] != cur_ep:
+            seen_theme_yet = False
+
+        cur_ep = message['ep']
+
+        if music_note in message['text'] and 'roll the dice' in message['text'].lower():
+            seen_theme_yet = True
+        elif seen_theme_yet:
+            filtered.append(message)
+
+    return filtered
 
 
 def get_avg_sentence_length(json_formatted):
@@ -277,12 +299,12 @@ def parse_html(author_map):
 
 def tokenize_sentence(message: str):
     message = message.lower()
-    message = re.subn(r"\([a-z]+\)", "", message)[0]
-    chars_to_remove = '"#$%()*+-<=@[\\]^_`{|}~/'
+    message = re.subn(r"\([a-z]+ [a-z]+\)", "", message)[0]  # remove things like (laughter)
+    chars_to_remove = '"#$%*+-<=@[\\]^_`{|}~/♪'  # remove all unneeded chars
     message = "".join(c for c in message if c not in chars_to_remove)
-    message = re.subn(r"(&|,|\.|\?|!)", r" \1 ", message)[0]
-    message = re.subn(r"  ", " ", message)[0]
-    words = [w for w in re.split(r"\s", message) if w != ""]
+    message = re.subn(r"(&|,|\.|\?|!)", r" \1 ", message)[0]  # surround important punctuation with spaces
+    message = re.subn(r"  ", " ", message)[0]  # clean up double spaces
+    words = [w for w in re.split(r"\s", message) if w != ""]  # remove empty tokens now
     return words
 
 
@@ -414,10 +436,10 @@ def build_model(
 
 
 def cleanup(seed, input_string: str) -> str:
-    output_string = re.subn(r"([a-z]+>)", r"\n\1", output_string)[0]
+    output_string = re.subn(r"([a-z]+>)", r"\n\1", input_string)[0]
     output_string = f"{seed} {output_string}"
 
-    output_string = re.subn(r" ([,\.\!\?])", r"\1", input_string)[0]
+    output_string = re.subn(r" ([,\.\!\?])", r"\1", output_string)[0]
     output_string = re.subn(r" i([ ,\.\!\?'])", r" I\1", output_string)[0]
 
     to_upper = lambda match: match.group(1).upper()
