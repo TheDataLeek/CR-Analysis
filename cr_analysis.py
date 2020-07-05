@@ -27,7 +27,7 @@ model_dir = curdir / 'models'
 script_file = curdir / 'output_script.txt'
 
 
-SEQUENCE_SIZE = 5
+SEQUENCE_SIZE = 10
 
 
 def main():
@@ -35,14 +35,15 @@ def main():
 
     author_map = generate_author_map()
     json_formatted = parse_html(author_map)
-    json_formatted = [
-        obj for obj in json_formatted if obj["episode"] == 80 and obj["season"] == 2
-    ]
+
+    # json_formatted = [
+    #     obj for obj in json_formatted if obj["episode"] in [1, 2, 3] and obj["season"] == 2
+    # ]
 
     df = pd.read_json("cr.json")
     df.head()
 
-    if not processed_file.exists():
+    if args.process or not processed_file.exists():
         print("processing data")
         main_cast_probs = (
             df.groupby("author").text.count().sort_values(ascending=False)[:8]
@@ -67,6 +68,8 @@ def main():
             obj["word_index"],
             obj["index_word"],
         )
+
+    # how_long_is_avg_sentence = get_avg_sentence_length(new_text)
 
     index_word = {int(k): v for k, v in index_word.items()}
 
@@ -103,7 +106,7 @@ def main():
     start = np.array([null_input], dtype=np.float64)
 
     response = []
-    for i in range(10_000):
+    for i in range(1_000):
         preds = model.predict(start)[0].astype(np.float64)
         preds = preds / sum(preds)  # normalize
         probas = np.random.multinomial(1, preds, 1)[0]
@@ -116,11 +119,34 @@ def main():
     script_file.write_text(cleanup(seed, " ".join(index_word[s] for s in response)))
 
 
+def get_avg_sentence_length(json_formatted):
+    num_words = 0
+    num_sentences = 0
+    current_sentence_word_count = 0
+    just_text = ' '.join(t['tokenized'] for t in json_formatted).split(' ')
+    data = []
+    for word in just_text:
+        if word in '.?!>':
+            data.append(current_sentence_word_count)
+            current_sentence_word_count = 0
+            num_sentences += 1
+        else:
+            current_sentence_word_count += 1
+            num_words += 1
+
+    print(f"{num_words / num_sentences=}")
+
+    hist, bins = np.histogram(data, bins=range(0, (5 * 15) + 1, 5), density=True)
+    plt.figure(figsize=(12, 6))
+    plt.bar(bins[1:] - 2.5, hist)
+    plt.savefig('word_dist.png')
+
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--train', action='store_true', default=False, help='Retrain model? (False)')
+    parser.add_argument('--process', action='store_true', default=False, help='Reprocess data? (False)')
     args = parser.parse_args()
     return args
 
@@ -360,7 +386,7 @@ def build_model(
         )
     )
     model.add(Dense(64, activation="relu"))
-    model.add(Dropout(0.25))  # input is rate that things are zeroed
+    model.add(Dropout(0.1))  # input is rate that things are zeroed
     model.add(Dense(num_words, activation="softmax"))
     model.compile(
         optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
@@ -386,6 +412,9 @@ def build_model(
 
 
 def cleanup(seed, input_string: str) -> str:
+    output_string = re.subn(r"([a-z]+>)", r"\n\1", output_string)[0]
+    output_string = f"{seed} {output_string}"
+
     output_string = re.subn(r" ([,\.\!\?])", r"\1", input_string)[0]
     output_string = re.subn(r" i([ ,\.\!\?'])", r" I\1", output_string)[0]
 
@@ -393,9 +422,6 @@ def cleanup(seed, input_string: str) -> str:
     output_string = re.subn(r"^(\w)", to_upper, output_string)[0]
     to_upper = lambda match: f"{match.group(1)}{match.group(2).upper()}"
     output_string = re.subn(r"([.\!\?] )(\w)", to_upper, output_string)[0]
-
-    output_string = f"{seed} {output_string}"
-    output_string = re.subn(r"([a-z]+>)", r"\n\1", output_string)[0]
 
     return output_string
 
