@@ -18,18 +18,19 @@ from keras.layers import LSTM, Dense, Dropout, Embedding, Bidirectional
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from pprint import pprint as pp
 import gc
+import textwrap
 
 
 curdir = pathlib.Path()
 output_file = curdir / "cr.json"
 processed_file = curdir / "processed.json"
-model_dir = curdir / 'models'
-script_file = curdir / 'output_script.txt'
+model_dir = curdir / "models"
+script_file = curdir / "output_script.txt"
 
 
-SEQUENCE_SIZE = 20
+SEQUENCE_SIZE = 50
 
-USE_EP = lambda i: 70 <= i <= 80
+USE_EP = lambda i: i >= 80
 
 
 def main():
@@ -84,12 +85,15 @@ def main():
     print(f"{len(new_text)=}")
 
     if args.train:
-        feature_train, feature_test, label_train, label_test = generate_features_and_labels(
-            new_text, word_index
-        )
+        (
+            feature_train,
+            feature_test,
+            label_train,
+            label_test,
+        ) = generate_features_and_labels(new_text, word_index)
 
         build_model(
-            feature_train, feature_test, label_train, label_test, word_index,
+            args.enhance, feature_train, feature_test, label_train, label_test, word_index,
         )
 
     model = model_dir / "model.h5"
@@ -97,7 +101,7 @@ def main():
         raise FileNotFoundError
     model = load_model(model)
 
-    seed = 'matt>'
+    seed = "matt>"
 
     null_input = np.ones(SEQUENCE_SIZE) * word_index["."]
     seq = []
@@ -106,7 +110,7 @@ def main():
             seq.append(word_index[word])
 
     seq = seq[-SEQUENCE_SIZE:]
-    null_input[-len(seq):] = seq
+    null_input[-len(seq) :] = seq
     start = np.array([null_input], dtype=np.float64)
 
     response = []
@@ -126,16 +130,16 @@ def main():
 def extract_rp(json_formatted):
     cur_ep = None
     seen_theme_yet = False
-    music_note = '♪'
+    music_note = "♪"
 
     filtered = []
     for message in json_formatted:
-        if message['ep'] != cur_ep:
+        if message["ep"] != cur_ep:
             seen_theme_yet = False
 
-        cur_ep = message['ep']
+        cur_ep = message["ep"]
 
-        if music_note in message['text'] and 'roll the dice' in message['text'].lower():
+        if music_note in message["text"] and "roll the dice" in message["text"].lower():
             seen_theme_yet = True
         elif seen_theme_yet:
             filtered.append(message)
@@ -147,10 +151,10 @@ def get_avg_sentence_length(json_formatted):
     num_words = 0
     num_sentences = 0
     current_sentence_word_count = 0
-    just_text = ' '.join(t['tokenized'] for t in json_formatted).split(' ')
+    just_text = " ".join(t["tokenized"] for t in json_formatted).split(" ")
     data = []
     for word in just_text:
-        if word in '.?!>':
+        if word in ".?!>":
             data.append(current_sentence_word_count)
             current_sentence_word_count = 0
             num_sentences += 1
@@ -163,14 +167,20 @@ def get_avg_sentence_length(json_formatted):
     hist, bins = np.histogram(data, bins=range(0, (5 * 15) + 1, 5), density=True)
     plt.figure(figsize=(12, 6))
     plt.bar(bins[1:] - 2.5, hist)
-    plt.savefig('word_dist.png')
-
+    plt.savefig("word_dist.png")
 
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train', action='store_true', default=False, help='Retrain model? (False)')
-    parser.add_argument('--process', action='store_true', default=False, help='Reprocess data? (False)')
+    parser.add_argument(
+        "--train", action="store_true", default=False, help="Retrain model? (False)"
+    )
+    parser.add_argument(
+        "--enhance", action="store_true", default=False, help="Continue training model? (False)"
+    )
+    parser.add_argument(
+        "--process", action="store_true", default=False, help="Reprocess data? (False)"
+    )
     args = parser.parse_args()
     return args
 
@@ -299,11 +309,16 @@ def parse_html(author_map):
 
 def tokenize_sentence(message: str):
     message = message.lower()
-    message = re.subn(r"\([a-z]+ [a-z]+\)", "", message)[0]  # remove things like (laughter)
-    chars_to_remove = '"#$%*+-<=@[\\]^_`{|}~/♪'  # remove all unneeded chars
+    # https://stackoverflow.com/questions/16644159/regex-to-remove-spaces-between-and
+    message = re.subn(r"\s+(?=[^\(\)]*\))", r"_", message)[
+        0
+    ]  # tokenize things like (laughter) and (big laugh)
+    chars_to_remove = '"#$%*+-<=@[\\]^`{|}~/♪'  # remove all unneeded chars
     message = "".join(c for c in message if c not in chars_to_remove)
-    message = re.subn(r"(&|,|\.|\?|!)", r" \1 ", message)[0]  # surround important punctuation with spaces
-    message = re.subn(r"  ", " ", message)[0]  # clean up double spaces
+    message = re.subn(r"(&|,|\.|\?|!)", r" \1 ", message)[
+        0
+    ]  # surround important punctuation with spaces
+    message = re.subn(r" +", " ", message)[0]  # clean up multiple spaces
     words = [w for w in re.split(r"\s", message) if w != ""]  # remove empty tokens now
     return words
 
@@ -375,47 +390,50 @@ def generate_features_and_labels(text, word_index):
 
 
 def build_model(
-    feature_train, feature_test, label_train, label_test, word_index,
+        enhance, feature_train, feature_test, label_train, label_test, word_index,
 ):
     num_words = len(word_index) + 1
 
     dim = 100
 
     # set up model
-    model = Sequential()  # Build model one layer at a time
-    weights = None
-    model.add(
-        Embedding(  # maps each input word to 100-dim vector
-            input_dim=num_words,  # how many words can input
-            input_length=SEQUENCE_SIZE,  # timestep length
-            output_dim=dim,  # output vector
-            weights=weights,
-            trainable=True,  # update embeddings
+    if enhance:
+        model = load_model(model_dir / 'model.h5')
+    else:
+        model = Sequential()  # Build model one layer at a time
+        weights = None
+        model.add(
+            Embedding(  # maps each input word to 100-dim vector
+                input_dim=num_words,  # how many words can input
+                input_length=SEQUENCE_SIZE,  # timestep length
+                output_dim=dim,  # output vector
+                weights=weights,
+                trainable=True,  # update embeddings
+            )
         )
-    )
-    model.add(
-        Bidirectional(
-            LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
-            input_shape=(SEQUENCE_SIZE, dim),
+        model.add(
+            Bidirectional(
+                LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
+                input_shape=(SEQUENCE_SIZE, dim),
+            )
         )
-    )
-    # model.add(
-    #     Bidirectional(
-    #         LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1)
-    #     )
-    # )
-    model.add(
-        Bidirectional(
-            LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
+        # model.add(
+        #     Bidirectional(
+        #         LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1)
+        #     )
+        # )
+        model.add(
+            Bidirectional(
+                LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
+            )
         )
-    )
-    model.add(Dense(64, activation="relu"))
-    model.add(Dropout(0.1))  # input is rate that things are zeroed
-    model.add(Dense(num_words, activation="softmax"))
-    model.compile(
-        optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
-    )
-    model.summary()
+        model.add(Dense(64, activation="relu"))
+        model.add(Dropout(0.1))  # input is rate that things are zeroed
+        model.add(Dense(num_words, activation="softmax"))
+        model.compile(
+            optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
+        )
+        model.summary()
 
     # train
     callbacks = [
@@ -436,16 +454,23 @@ def build_model(
 
 
 def cleanup(seed, input_string: str) -> str:
-    output_string = re.subn(r"([a-z]+>)", r"\n\1", input_string)[0]
+    output_string = re.subn(r"([a-z]+>)", r"\n\n\1", input_string)[0]
     output_string = f"{seed} {output_string}"
 
     output_string = re.subn(r" ([,\.\!\?])", r"\1", output_string)[0]
     output_string = re.subn(r" i([ ,\.\!\?'])", r" I\1", output_string)[0]
+    output_string = output_string.replace("_", " ")
 
     to_upper = lambda match: match.group(1).upper()
     output_string = re.subn(r"^(\w)", to_upper, output_string)[0]
     to_upper = lambda match: f"{match.group(1)}{match.group(2).upper()}"
     output_string = re.subn(r"([.\!\?] )(\w)", to_upper, output_string)[0]
+
+    new_output = []
+    for line in output_string.split('\n'):
+        new_output += textwrap.wrap(line, width=100)
+
+    output_string = '\n'.join(new_output)
 
     return output_string
 
