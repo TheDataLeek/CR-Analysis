@@ -28,7 +28,7 @@ model_dir = curdir / "models"
 script_file = curdir / "output_script.txt"
 
 
-SEQUENCE_SIZE = 50
+SEQUENCE_SIZE = 100
 
 USE_EP = lambda i: i >= 80
 
@@ -114,7 +114,7 @@ def main():
     start = np.array([null_input], dtype=np.float64)
 
     response = []
-    for i in range(1_000):
+    for _ in tqdm.tqdm(range(10_000)):
         preds = model.predict(start)[0].astype(np.float64)
         preds = preds / sum(preds)  # normalize
         probas = np.random.multinomial(1, preds, 1)[0]
@@ -124,7 +124,9 @@ def main():
 
         start = np.array([[*start[0], next_idx][-SEQUENCE_SIZE:]], dtype=np.float64)
 
-    script_file.write_text(cleanup(seed, " ".join(index_word[s] for s in response)))
+    response = response[100:]
+
+    script_file.write_text(cleanup(" ".join(index_word[s] for s in response)))
 
 
 def extract_rp(json_formatted):
@@ -361,12 +363,6 @@ def generate_features_and_labels(text, word_index):
 
     features = np.array(features, dtype=np.uint16)
 
-    # # one-hot encode (switch to binary representation) for words
-    # num_words = len(word_index) + 1
-    # label_array = np.zeros((len(features), num_words), dtype=np.bool_)
-    # for i, label in enumerate(labels):
-    #     label_array[i, label] = True
-
     label_array = np.array(labels, dtype=np.uint16)
 
     print(f"{features.shape=}")
@@ -413,20 +409,27 @@ def build_model(
         )
         model.add(
             Bidirectional(
-                LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
+                LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1),
                 input_shape=(SEQUENCE_SIZE, dim),
             )
         )
+
+        # model.add(
+        #     Bidirectional(
+        #         LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
+        #         input_shape=(SEQUENCE_SIZE, dim),
+        #     )
+        # )
         # model.add(
         #     Bidirectional(
         #         LSTM(64, return_sequences=True, dropout=0.1, recurrent_dropout=0.1)
         #     )
         # )
-        model.add(
-            Bidirectional(
-                LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
-            )
-        )
+        # model.add(
+        #     Bidirectional(
+        #         LSTM(64, return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
+        #     )
+        # )
         model.add(Dense(64, activation="relu"))
         model.add(Dropout(0.1))  # input is rate that things are zeroed
         model.add(Dense(num_words, activation="softmax"))
@@ -453,9 +456,8 @@ def build_model(
     )
 
 
-def cleanup(seed, input_string: str) -> str:
+def cleanup(input_string: str) -> str:
     output_string = re.subn(r"([a-z]+>)", r"\n\n\1", input_string)[0]
-    output_string = f"{seed} {output_string}"
 
     output_string = re.subn(r" ([,\.\!\?])", r"\1", output_string)[0]
     output_string = re.subn(r" i([ ,\.\!\?'])", r" I\1", output_string)[0]
@@ -468,7 +470,7 @@ def cleanup(seed, input_string: str) -> str:
 
     new_output = []
     for line in output_string.split('\n'):
-        new_output += textwrap.wrap(line, width=100)
+        new_output.append('\n'.join(textwrap.wrap(line, width=100)))
 
     output_string = '\n'.join(new_output)
 
